@@ -303,7 +303,8 @@ def process(*, info):
     model = completionmodel.CompletionModel(column_widths=(10, 10, 80))
     for what, processes in itertools.groupby(
             (p for p in guiprocess.all_processes.values() if p is not None),
-            lambda proc: proc.what):
+            lambda proc: proc.outcome.state_str() == 'successful',
+        ):
 
         # put successful processes last
         sorted_processes = sorted(
@@ -316,3 +317,43 @@ def process(*, info):
         cat = listcategory.ListCategory(what.capitalize(), entries, sort=False)
         model.add_category(cat)
     return model
+
+
+def robloxapi(*, info=None) -> completionmodel.CompletionModel:
+    """Get a completion model filled with Roblox API documentation."""
+    utils.unused(info)  # We don't use info but it's required by the completion system
+    try:
+        from qutebrowser.utils import robloxapi
+        api_items = robloxapi.get_api_items()
+        
+        # Group items by type
+        by_type = {
+            "Classes": [],
+            "Properties": [],
+            "Functions": [],
+            "Events": []
+        }
+        
+        # Add all items to their respective groups
+        for item in api_items.all_items:  # Access the list of items directly
+            if item.type == "class":
+                by_type["Classes"].append((item.name, item.url, item.description))
+            elif item.type == "property":
+                by_type["Properties"].append((item.name, item.url, item.description))
+            elif item.type == "function":
+                by_type["Functions"].append((item.name, item.url, item.description))
+            elif item.type == "event":
+                by_type["Events"].append((item.name, item.url, item.description))
+        
+        # Create completion model
+        model = completionmodel.CompletionModel()
+        
+        # Add categories if they have items
+        for category_name, category_items in by_type.items():
+            if category_items:
+                model.add_category(listcategory.ListCategory(category_name, category_items))
+        
+        return model
+    except Exception as e:
+        log.completion.error(f"Failed to load Roblox API documentation: {e}")
+        raise

@@ -60,6 +60,7 @@ from qutebrowser.utils import (log, version, message, utils, urlutils, objreg,
 from qutebrowser.mainwindow.statusbar import command
 from qutebrowser.misc import utilcmds
 from qutebrowser.browser import commands
+from qutebrowser.commands import robloxapi
 # pylint: enable=unused-import
 
 
