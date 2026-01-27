@@ -547,6 +547,8 @@ class WebEngineVersions:
     chromium_major: Optional[int] = dataclasses.field(init=False)
 
     # Dates based on https://chromium.googlesource.com/chromium/src/+refs
+    # and/or https://chromereleases.googleblog.com/
+
     _BASES: ClassVar[dict[int, str]] = {
         83: '83.0.4103.122',  # 2020-06-27, Qt 5.15.2
         87: '87.0.4280.144',  # 2021-01-08, Qt 5.15
@@ -562,7 +564,6 @@ class WebEngineVersions:
         134: '134.0.6998.208',  # 2025-04-16, Qt 6.10
     }
 
-    # Dates based on https://chromereleases.googleblog.com/
     _CHROMIUM_VERSIONS: ClassVar[dict[utils.VersionNumber, tuple[str, Optional[str]]]] = {
         # ====== UNSUPPORTED =====
 
@@ -654,9 +655,14 @@ class WebEngineVersions:
         utils.VersionNumber(6, 9): (_BASES[130], '133.0.6943.141'),  # 2025-02-25
         utils.VersionNumber(6, 9, 1): (_BASES[130], '136.0.7103.114'),  # 2025-05-13
         utils.VersionNumber(6, 9, 2): (_BASES[130], '139.0.7258.67'),  # 2025-07-29
+        utils.VersionNumber(6, 9, 3): (_BASES[130], '140.0.7339.207'),  # 2025-09-22
 
         ## Qt 6.10
         utils.VersionNumber(6, 10): (_BASES[134], '140.0.7339.207'),  # 2025-09-22
+        utils.VersionNumber(6, 10, 1): (_BASES[134], '142.0.7444.162'),  # 2025-11-11
+
+        ## Qt 6.11 (WIP, Beta 2)
+        utils.VersionNumber(6, 11): (_BASES[134], '142.0.7444.176'),  # 2025-11-17
     }
 
     def __post_init__(self) -> None:
@@ -930,12 +936,18 @@ def _webengine_extensions() -> Sequence[str]:
     lines: list[str] = []
     if (
         objects.backend == usertypes.Backend.QtWebEngine
-        and "avoid-chromium-init" not in objects.debug_flags
         and machinery.IS_QT6  # mypy; TODO early return once Qt 5 is dropped
     ):
-        from qutebrowser.qt.webenginecore import QWebEngineProfile
-        profile = QWebEngineProfile.defaultProfile()
-        assert profile is not None  # mypy
+        from qutebrowser.browser.webengine import webenginesettings
+        lines.append("WebExtensions:")
+
+        if webenginesettings.default_profile:
+            profile = webenginesettings.default_profile
+        elif "avoid-chromium-init" in objects.debug_flags:
+            lines[0] += " unknown (avoiding init)"
+            return lines
+        else:
+            profile = webenginesettings.default_qt_profile()
 
         try:
             ext_manager = profile.extensionManager()
@@ -944,7 +956,6 @@ def _webengine_extensions() -> Sequence[str]:
             return []
         assert ext_manager is not None  # mypy
 
-        lines.append("WebExtensions:")
         if not ext_manager.extensions():
             lines[0] += " none"
 
