@@ -3,20 +3,22 @@
 import json
 import urllib.request
 import urllib.error
-from typing import Dict, List, Tuple, Optional, Set
+from typing import Dict, List, Optional
 from dataclasses import dataclass
 from pathlib import Path
 import time
-from functools import lru_cache
 import threading
 from collections import defaultdict
 
+from qutebrowser.misc import sql
 from qutebrowser.utils import log
 
 VERSION_URL = "https://setup.rbxcdn.com/versionQTStudio"
 DUMP_URL_TEMPLATE = "https://setup.rbxcdn.com/%s-API-Dump.json"
 CACHE_DIR = Path.home() / ".cache" / "qutebrowser" / "robloxapi"
 CACHE_FILE = CACHE_DIR / "api_dump.json"
+DB_FILE = CACHE_DIR / "robloxapi.sqlite"
+DB_MARKER_FILE = CACHE_DIR / "robloxapi.sqlite.marker"
 CACHE_EXPIRY = 24 * 60 * 60  # 24 hours
 
 @dataclass(frozen=True)  # Make immutable for caching
@@ -50,78 +52,6 @@ class ApiItems:
     def __iter__(self):
         """Make ApiItems iterable by iterating over all_items."""
         return iter(self.all_items)
-    
-    def _fuzzy_match(self, text: str, target: str) -> Tuple[bool, float]:
-        """Fuzzy match text against target string.
-        
-        Returns:
-            Tuple of (matched, score) where:
-            - matched: True if text is found in target
-            - score: Higher score means better match (closer to start, more consecutive chars)
-        """
-        text = text.lower()
-        target = target.lower()
-        
-        if not text:
-            return True, 0.0
-            
-        if text in target:
-            # Exact substring match - score based on position
-            pos = target.find(text)
-            return True, 1.0 - (pos / len(target))
-            
-        # Check for partial matches
-        text_idx = 0
-        target_idx = 0
-        consecutive = 0
-        max_consecutive = 0
-        first_match_pos = -1
-        
-        while text_idx < len(text) and target_idx < len(target):
-            if text[text_idx] == target[target_idx]:
-                if first_match_pos == -1:
-                    first_match_pos = target_idx
-                consecutive += 1
-                max_consecutive = max(max_consecutive, consecutive)
-                text_idx += 1
-            else:
-                consecutive = 0
-            target_idx += 1
-            
-        if text_idx == len(text):
-            # All characters matched
-            score = 0.5  # Base score for partial match
-            if first_match_pos != -1:
-                score += 0.3 * (1.0 - (first_match_pos / len(target)))  # Position bonus
-            score += 0.2 * (max_consecutive / len(text))  # Consecutive bonus
-            return True, score
-            
-        return False, 0.0
-    
-    @lru_cache(maxsize=100)  # Cache filtered results
-    def filter(self, text: str, types: Optional[Set[str]] = None) -> List[ApiItem]:
-        """Filter items by text and optionally by type using fuzzy matching."""
-        if not text:
-            return self.all_items
-            
-        # Get items to search through
-        if types:
-            items = []
-            for type_ in types:
-                items.extend(self.by_type[type_])
-        else:
-            items = self.all_items
-            
-        # Score and filter items
-        scored_items = []
-        for item in items:
-            matched, score = self._fuzzy_match(text, item.name)
-            if matched:
-                scored_items.append((score, item))
-                
-        # Sort by score (highest first)
-        scored_items.sort(reverse=True, key=lambda x: x[0])
-        return [item for _, item in scored_items]
 
 # Global cache for parsed API items
 _parsed_items_cache = None
@@ -250,4 +180,65 @@ def get_api_items() -> ApiItems:
         cache_api_dump(dump)
         items = parse_api_dump(dump)
         _parsed_items_cache = ApiItems(items)
-        return _parsed_items_cache 
+        return _parsed_items_cache
+
+
+# Lazily-created SQLite store used by the completion model.
+_db: Optional[sql.Database] = None
+_table = None
+
+
+def _get_table():
+    """Return the (Database, SqlTable) for the Roblox API store, creating it once.
+
+    Must be called from the GUI thread (Qt SQL is not thread-safe).
+    """
+    global _db, _table
+    if _db is not None:
+        return _db, _table
+
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    _db = sql.Database(str(DB_FILE))
+    _table = _db.table(
+        "RobloxApi", ["name", "url", "type", "description"])
+    # indexed lookups for the `type = ... AND name LIKE ...` completion queries
+    _table.create_index("RobloxApiNameIdx", "name")
+    _table.create_index("RobloxApiTypeIdx", "type")
+    if _db.user_version_changed():
+        _db.upgrade_user_version()
+    return _db, _table
+
+
+def _current_marker() -> str:
+    """A marker that changes whenever the cached API dump is refreshed."""
+    if CACHE_FILE.exists():
+        return str(CACHE_FILE.stat().st_mtime_ns)
+    return "0"
+
+
+def build_sql_table():
+    """Ensure the SQLite store is populated with the current API dump.
+
+    Repopulates only when the table is empty or the cached dump changed, so it's
+    cheap to call on every completion. Returns the (Database, SqlTable) pair.
+    """
+    db, table = _get_table()
+    # get_api_items() refreshes CACHE_FILE if the 24h cache expired, so check the
+    # marker afterwards to detect a new dump.
+    items = get_api_items()
+    marker = _current_marker()
+    previous = (DB_MARKER_FILE.read_text(encoding="utf-8")
+                if DB_MARKER_FILE.exists() else None)
+
+    if len(table) == 0 or previous != marker:
+        log.completion.debug("Rebuilding Roblox API SQL table")
+        table.delete_all()
+        table.insert_batch({
+            "name": [item.name for item in items],
+            "url": [item.url for item in items],
+            "type": [item.type for item in items],
+            "description": [item.description for item in items],
+        })
+        DB_MARKER_FILE.write_text(marker, encoding="utf-8")
+
+    return db, table 

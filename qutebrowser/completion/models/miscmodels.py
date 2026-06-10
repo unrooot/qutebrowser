@@ -320,39 +320,27 @@ def process(*, info):
 
 
 def robloxapi(*, info=None) -> completionmodel.CompletionModel:
-    """Get a completion model filled with Roblox API documentation."""
+    """Get a completion model filled with Roblox API documentation.
+
+    Backed by a SQLite store (see :mod:`qutebrowser.utils.robloxapi`) so that
+    filtering/sorting the ~5000 entries happens in SQL rather than in Python.
+    """
     utils.unused(info)  # We don't use info but it's required by the completion system
     try:
         from qutebrowser.utils import robloxapi
-        api_items = robloxapi.get_api_items()
-        
-        # Group items by type
-        by_type = {
-            "Classes": [],
-            "Properties": [],
-            "Functions": [],
-            "Events": []
-        }
-        
-        # Add all items to their respective groups
-        for item in api_items.all_items:  # Access the list of items directly
-            if item.type == "class":
-                by_type["Classes"].append((item.name, item.url, item.description))
-            elif item.type == "property":
-                by_type["Properties"].append((item.name, item.url, item.description))
-            elif item.type == "function":
-                by_type["Functions"].append((item.name, item.url, item.description))
-            elif item.type == "event":
-                by_type["Events"].append((item.name, item.url, item.description))
-        
-        # Create completion model
+        from qutebrowser.completion.models import robloxapicategory
+
+        db, _table = robloxapi.build_sql_table()
+
         model = completionmodel.CompletionModel()
-        
-        # Add categories if they have items
-        for category_name, category_items in by_type.items():
-            if category_items:
-                model.add_category(listcategory.ListCategory(category_name, category_items))
-        
+        # one SQL-backed category per member type, preserving the grouped display
+        for category_name, type_ in [("Classes", "class"),
+                                     ("Properties", "property"),
+                                     ("Functions", "function"),
+                                     ("Events", "event")]:
+            model.add_category(robloxapicategory.RobloxApiCategory(
+                database=db, name=category_name, type_=type_))
+
         return model
     except Exception as e:
         log.completion.error(f"Failed to load Roblox API documentation: {e}")
